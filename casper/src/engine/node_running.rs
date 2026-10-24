@@ -7,7 +7,8 @@
 
 use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rchain_block_storage::block_store::BlockStore;
@@ -36,6 +37,162 @@ use crate::protocol::casper_message_protocol::{
     BlockMessageSerde, BlockRangeSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
 };
 use crate::validator_identity::ValidatorIdentity;
+
+/// The incident diagnostics use constant-memory, per-reason output budgets.
+/// This is bounded log *emission*, not a bound on upstream network traffic or
+/// proof that a reply was actually delivered to the requester.
+const FRINGE_LOGS_PER_MINUTE: u64 = 8;
+const FRINGE_LOG_SECONDS_PER_WINDOW: u64 = 60;
+const FRINGE_LOG_CLASSES: usize = 5;
+
+/// Separate request, anchor, metadata, response and ancestry budgets so a
+/// request flood does not hide the first refusal or metadata error.
+#[derive(Clone, Copy)]
+enum FringeLogClass {
+    Request = 0,
+    Anchor = 1,
+    Metadata = 2,
+    Response = 3,
+    Ancestry = 4,
+}
+
+impl FringeLogClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Anchor => "anchor",
+            Self::Metadata => "metadata",
+            Self::Response => "response",
+            Self::Ancestry => "ancestry",
+        }
+    }
+
+    fn classify(msg: &str) -> Self {
+        if msg.starts_with("Received FinalizedFringeRequest") {
+            // Receipt records contain an anchor= field but must not consume
+            // the independent missing-anchor refusal budget.
+            Self::Request
+        } else if msg.contains("fringe ancestry (#139)") || msg.starts_with("Included ") {
+            Self::Ancestry
+        } else if msg.contains("fringe member") || msg.contains("member metadata") {
+            Self::Metadata
+        } else if msg.contains("anchor")
+            || msg.contains("genesis")
+            || msg.contains("requested root")
+        {
+            Self::Anchor
+        } else {
+            Self::Response
+        }
+    }
+}
+
+struct FringeLogBucket {
+    /// High bits: monotonic window number (starting at one); low byte: grants.
+    grants: AtomicU64,
+    suppressed: AtomicU64,
+}
+
+impl FringeLogBucket {
+    const fn new() -> Self {
+        Self {
+            grants: AtomicU64::new(0),
+            suppressed: AtomicU64::new(0),
+        }
+    }
+
+    /// Injectable minute makes quota and rollover tests deterministic.
+    fn admit_at(&self, window: u64) -> Option<u64> {
+        let window = window.min((u64::MAX >> 8) - 1) + 1;
+        loop {
+            let old = self.grants.load(Ordering::Relaxed);
+            let old_window = old >> 8;
+            let n = old & 255;
+            if old_window == window && n >= FRINGE_LOGS_PER_MINUTE {
+                self.suppressed.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            let new = if old_window == window {
+                old + 1
+            } else {
+                (window << 8) | 1
+            };
+            if self
+                .grants
+                .compare_exchange_weak(old, new, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(if old_window == window {
+                    0
+                } else {
+                    self.suppressed.swap(0, Ordering::Relaxed)
+                });
+            }
+        }
+    }
+}
+
+static FRINGE_LOG_START: OnceLock<Instant> = OnceLock::new();
+static FRINGE_LOG_BUCKETS: [FringeLogBucket; FRINGE_LOG_CLASSES] =
+    [const { FringeLogBucket::new() }; FRINGE_LOG_CLASSES];
+
+/// Scoped strictly to the responder's FinalizedFringeRequest branch, including
+/// the ancestry walker. Does not suppress unrelated consensus diagnostics.
+/// The first granted line in a new window reports the number of suppressed
+/// lines from earlier in this process, without retaining peers or hashes.
+struct BoundedFringeLog<'a> {
+    inner: &'a dyn Log,
+}
+
+impl BoundedFringeLog<'_> {
+    fn emit(&self, source: LogSource, msg: &str, level: u8) {
+        let class = FringeLogClass::classify(msg);
+        let window = FRINGE_LOG_START
+            .get_or_init(Instant::now)
+            .elapsed()
+            .as_secs()
+            / FRINGE_LOG_SECONDS_PER_WINDOW;
+        let Some(suppressed) = FRINGE_LOG_BUCKETS[class as usize].admit_at(window) else {
+            return;
+        };
+        if suppressed != 0 {
+            self.inner.warn(
+                source,
+                &format!(
+                    "FinalizedFringe diagnostics: {} {} log record(s) suppressed",
+                    suppressed,
+                    class.label()
+                ),
+            );
+        }
+        match level {
+            0 => self.inner.info(source, msg),
+            1 => self.inner.warn(source, msg),
+            _ => self.inner.error(source, msg),
+        }
+    }
+}
+
+impl Log for BoundedFringeLog<'_> {
+    fn is_trace_enabled(&self, source: LogSource) -> bool {
+        self.inner.is_trace_enabled(source)
+    }
+    fn trace(&self, source: LogSource, msg: &str) {
+        self.inner.trace(source, msg);
+    }
+    fn debug(&self, source: LogSource, msg: &str) {
+        self.inner.debug(source, msg);
+    }
+    fn info(&self, source: LogSource, msg: &str) {
+        self.emit(source, msg, 0);
+    }
+    fn warn(&self, source: LogSource, msg: &str) {
+        self.emit(source, msg, 1);
+    }
+    fn error(&self, source: LogSource, msg: &str) {
+        self.emit(source, msg, 2);
+    }
+}
 
 /// Handle a peer-broadcast block hash (port of `handleBlockHashMessage`).
 pub async fn handle_block_hash_message(
@@ -489,7 +646,7 @@ pub async fn handle_finalized_fringe_request(
         FinalizedFringeSerde.mk_packet(fringe),
     )
     .await;
-    log.info(source, &format!("FinalizedFringe sent to {peer}"));
+    log.info(source, &format!("FinalizedFringe send attempted to {peer}"));
 }
 
 /// **The answer to a finalized-fringe request** — this node's own latest fringe, or the block a
@@ -526,7 +683,19 @@ pub(crate) async fn finalized_fringe_response(
         match genesis_hash {
             Some(genesis_hash) => {
                 let genesis = match block_store.get(&[genesis_hash]).await {
-                    Ok(mut v) => v.pop().flatten(),
+                    Ok(mut v) => {
+                        let block = v.pop().flatten();
+                        if block.is_none() && req.anchor.is_none() {
+                            log.warn(
+                                log_source,
+                                &format!(
+                                    "FinalizedFringeRequest unanswered: genesis {} in DAG but block body absent from BlockStore",
+                                    genesis_hash.to_hex()
+                                ),
+                            );
+                        }
+                        block
+                    }
                     Err(e) => {
                         // **A read that fails is not "there is no genesis block"** (C249's class).
                         // This branch exists so a joining validator downloads the genesis and its
@@ -548,7 +717,12 @@ pub(crate) async fn finalized_fringe_response(
                     ancestry: Vec::new(),
                 })
             }
-            None => None,
+            None => {
+                if req.anchor.is_none() {
+                    log.warn(log_source, "FinalizedFringeRequest unanswered: no latest finalized fringe and no genesis block in the DAG height map");
+                }
+                None
+            }
         }
     } else {
         // **The latest finalised block's claim, read from that block's metadata** (Law 66/68; C250's
@@ -565,15 +739,45 @@ pub(crate) async fn finalized_fringe_response(
         for h in &latest_fringe_hashes {
             // `lookup` is a metadata read, not a replay; a member this node cannot read is skipped
             // rather than served as a bogus state.
-            if let Ok(Some(meta)) = dag.lookup(h).await {
-                let candidate = (meta.block_num, *h, meta.fringe_state_hash);
-                let better = latest
-                    .as_ref()
-                    .is_none_or(|(height, hash, _)| (candidate.0, candidate.1) > (*height, *hash));
-                if better {
-                    latest = Some(candidate);
+            match dag.lookup(h).await {
+                Ok(Some(meta)) => {
+                    let candidate = (meta.block_num, *h, meta.fringe_state_hash);
+                    let better = latest.as_ref().is_none_or(|(height, hash, _)| {
+                        (candidate.0, candidate.1) > (*height, *hash)
+                    });
+                    if better {
+                        latest = Some(candidate);
+                    }
+                }
+                Ok(None) => {
+                    if req.anchor.is_none() {
+                        log.warn(
+                            log_source,
+                            &format!(
+                                "FinalizedFringeRequest: latest fringe member {} has no DAG metadata",
+                                h.to_hex()
+                            ),
+                        );
+                    }
+                }
+                Err(e) => {
+                    if req.anchor.is_none() {
+                        log.error(
+                            log_source,
+                            &format!(
+                                "FinalizedFringeRequest: failed to read metadata for fringe member {}: {e}",
+                                h.to_hex()
+                            ),
+                        );
+                    }
                 }
             }
+        }
+        if latest.is_none() && req.anchor.is_none() {
+            log.warn(
+                log_source,
+                "FinalizedFringeRequest unanswered: latest finalized fringe has no readable member metadata",
+            );
         }
         latest.map(|(_, _, state_hash)| FinalizedFringe {
             hashes: latest_fringe_hashes.iter().copied().collect(),
@@ -596,11 +800,25 @@ pub(crate) async fn finalized_fringe_response(
     // that cannot be answered is a thing the joiner already has a terminal state for (AUDIT C181).
     let response = match req.anchor {
         Some(anchor) => match block_store.get(&[anchor]).await {
-            Ok(mut v) => v.pop().flatten().map(|b| FinalizedFringe {
-                hashes: vec![anchor],
-                state_hash: b.post_state_hash,
-                ancestry: Vec::new(),
-            }),
+            Ok(mut v) => match v.pop().flatten() {
+                Some(b) => Some(FinalizedFringe {
+                    hashes: vec![anchor],
+                    state_hash: b.post_state_hash,
+                    ancestry: Vec::new(),
+                }),
+                None => {
+                    // An absent requested root is a normal refusal, not a
+                    // storage error. Do not substitute the ordinary fringe.
+                    log.warn(
+                        log_source,
+                        &format!(
+                            "FinalizedFringeRequest unanswered: requested anchor {} absent from BlockStore; no alternate state root served",
+                            anchor.to_hex()
+                        ),
+                    );
+                    None
+                }
+            },
             Err(e) => {
                 log.error(
                     log_source,
@@ -1140,13 +1358,28 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 }
             }
             CasperMessage::FinalizedFringeRequest(req) => {
+                let limited_log = BoundedFringeLog {
+                    inner: self.log.as_ref(),
+                };
+                // A successful reply was logged, but a refused/missing-state
+                // request had no receipt trace. This record distinguishes a
+                // request reaching the responder from an earlier transport
+                // timeout. Do not log untrusted identifier or payload bytes.
+                limited_log.info(
+                    self.log_source,
+                    &format!(
+                        "Received FinalizedFringeRequest from {peer}; anchor={}; include_fringe_metadata={}",
+                        req.anchor.map_or_else(|| "ordinary".to_string(), |h| h.to_hex()),
+                        req.include_fringe_metadata
+                    ),
+                );
                 // The response construction — the peer's own fringe, or the block a recovery sync
                 // named, with the ancestry either way — is a free function of its own so the choice
                 // has a test that does not need a whole engine (C259a).
                 if let Some(fringe_response) = finalized_fringe_response(
                     self.dag.as_ref(),
                     &self.block_store,
-                    self.log.as_ref(),
+                    &limited_log,
                     self.log_source,
                     req,
                 )
@@ -1155,22 +1388,30 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     handle_finalized_fringe_request(
                         self.transport.as_ref(),
                         &self.conf,
-                        self.log.as_ref(),
+                        &limited_log,
                         self.log_source,
                         peer,
                         &fringe_response,
                     )
                     .await;
-                    self.log.info(
+                    limited_log.info(
                         self.log_source,
                         &format!(
-                            "Sent fringe response ({}).",
+                            "Fringe response send attempted ({}).",
                             fringe_response
                                 .hashes
                                 .iter()
                                 .map(|h| h.to_hex())
                                 .collect::<Vec<_>>()
                                 .join(" ")
+                        ),
+                    );
+                } else {
+                    limited_log.warn(
+                        self.log_source,
+                        &format!(
+                            "FinalizedFringeResponse withheld from {peer}: no valid requested root available; anchor={}",
+                            req.anchor.map_or_else(|| "ordinary".to_string(), |h| h.to_hex())
                         ),
                     );
                 }
@@ -1197,6 +1438,103 @@ impl<E: RSpaceExporter> NodeRunning<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic budget boundary without timers or host-memory assumptions.
+    #[test]
+    fn fringe_diagnostic_budget_caps_and_reports_suppression() {
+        let budget = FringeLogBucket::new();
+        for _ in 0..FRINGE_LOGS_PER_MINUTE {
+            assert_eq!(budget.admit_at(12), Some(0));
+        }
+        for _ in 0..32 {
+            assert_eq!(budget.admit_at(12), None);
+        }
+        assert_eq!(budget.admit_at(13), Some(32));
+        for _ in 1..FRINGE_LOGS_PER_MINUTE {
+            assert_eq!(budget.admit_at(13), Some(0));
+        }
+        assert_eq!(budget.admit_at(13), None);
+        assert_eq!(budget.admit_at(14), Some(1));
+    }
+
+    /// Concurrent responders share the same hard log-output limit, rather than
+    /// each obtaining a full per-request allowance.
+    #[test]
+    fn fringe_diagnostic_budget_is_concurrency_safe() {
+        let budget = Arc::new(FringeLogBucket::new());
+        let barrier = Arc::new(std::sync::Barrier::new(25));
+        let mut handles = Vec::new();
+        for _ in 0..24 {
+            let budget = budget.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                budget.admit_at(1).is_some()
+            }));
+        }
+        barrier.wait();
+        let granted = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("fringe budget worker panicked"))
+            .filter(|admitted| *admitted)
+            .count();
+        assert_eq!(granted as u64, FRINGE_LOGS_PER_MINUTE);
+        assert_eq!(budget.admit_at(2), Some(24 - FRINGE_LOGS_PER_MINUTE));
+    }
+
+    #[test]
+    fn fringe_diagnostic_categories_keep_failures_separate_from_request_traffic() {
+        assert!(matches!(
+            FringeLogClass::classify("Received FinalizedFringeRequest from peer; anchor=ordinary"),
+            FringeLogClass::Request
+        ));
+        assert!(matches!(
+            FringeLogClass::classify(
+                "FinalizedFringeRequest unanswered: requested anchor bad absent from BlockStore"
+            ),
+            FringeLogClass::Anchor
+        ));
+        assert!(matches!(
+            FringeLogClass::classify(
+                "FinalizedFringeRequest: latest fringe member missing metadata"
+            ),
+            FringeLogClass::Metadata
+        ));
+        assert!(matches!(
+            FringeLogClass::classify("fringe ancestry (#139): lookup failed"),
+            FringeLogClass::Ancestry
+        ));
+        assert!(matches!(
+            FringeLogClass::classify("Sent fringe response"),
+            FringeLogClass::Response
+        ));
+        // An exhausted request counter must not hide the first anchor failure.
+        let requests = FringeLogBucket::new();
+        let anchors = FringeLogBucket::new();
+        for _ in 0..32 {
+            requests.admit_at(1);
+        }
+        assert_eq!(anchors.admit_at(1), Some(0));
+        assert_eq!(requests.admit_at(1), None);
+    }
+
+    #[derive(Default)]
+    struct FringeLog {
+        warnings: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Log for FringeLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, _msg: &str) {}
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.warnings.lock().unwrap().push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, _msg: &str) {}
+    }
 
     /// A block store whose every read fails, so a read error is observable as one.
     struct FailingBlockStore;
@@ -2102,6 +2440,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn ordinary_fringe_request_with_no_genesis_logs_refusal() {
+        let dag = build_dag().await;
+        let store = block_store(vec![]).await;
+        let log = FringeLog::default();
+        let req = FinalizedFringeRequest {
+            identifier: String::new(),
+            trim_state: true,
+            include_fringe_metadata: false,
+            anchor: None,
+        };
+        assert!(finalized_fringe_response(
+            dag.as_ref(),
+            &store,
+            &log,
+            LogSource::new("test"),
+            &req
+        )
+        .await
+        .is_none());
+        let warnings = log.warnings.lock().unwrap();
+        assert!(warnings
+            .iter()
+            .any(|line| line.contains("no latest finalized fringe and no genesis block")));
+    }
+
     /// **A recovery sync's root, and the ancestry that makes it replayable** (C259a).
     ///
     /// A joiner with an empty DAG cannot derive the fringe state of the blocks it restores — that is a
@@ -2186,11 +2550,12 @@ mod tests {
             anchor: Some(hash(0xEE)),
             ..req.clone()
         };
+        let refused_log = FringeLog::default();
         assert!(
             finalized_fringe_response(
                 dag.as_ref(),
                 &store,
-                &NopLog,
+                &refused_log,
                 LogSource::new("test"),
                 &absent
             )
@@ -2198,5 +2563,10 @@ mod tests {
             .is_none(),
             "an unknown anchor must not be answered with a root the requester did not ask for"
         );
+        let warnings = refused_log.warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1, "one refusal reason per absent anchor");
+        assert!(warnings[0].contains(&hash(0xEE).to_hex()));
+        assert!(warnings[0].contains("absent from BlockStore"));
+        assert!(warnings[0].contains("no alternate state root served"));
     }
 }
