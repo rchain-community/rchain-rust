@@ -31,7 +31,7 @@ hosts, the genesis, the wallets.
 | Validators | **four, at equal stake — 250 each, pool 1000**, two per host. Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (nyc3) and B `167.99.43.214` (**ams3**) — deliberately on two continents, so every 3-of-4 quorum crosses the Atlantic. Both `s-2vcpu-4gb` |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | `dev` @ `b4f1cbfdb`, static musl, `sha256:06d1823e6b80…`, **the same build on all four nodes** |
+| Binary | `dev` @ `185ed283`, static musl, `sha256:c4948443bb6b…`, **the same build on all four nodes and on the playground** — rebuilt 2026-10-24 |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -75,7 +75,7 @@ Two entries in that list are easy to confuse, and they are different chains:
 | entry in r-wallet | what it actually is |
 |---|---|
 | **RChain testnet** | this net — `testnet.rhobot.net` |
-| **Rholang playground** | the playground node at `playground.rhobot.net` (formerly `rnodeapi.rhobot.net`) — a dev-mode chain that is *not* this one |
+| **Rholang playground** | the playground node at `playground.rhobot.net` (formerly `rnodeapi.rhobot.net`) — a dev-mode chain that is *not* this one: one validator on rhobot-2, shard **`/playground`**, genesis `edd277849ea96848f983d854fa8eb92d942fda2e6b9d4937d4827da423a9f8d9`, rebuilt 2026-10-24 from the same image as this net |
 
 Until 2026-09-22 the wallet's only "testnet" entry pointed at the playground, so picking it put you on
 the wrong chain, with a dead faucet link; that is fixed in
@@ -425,7 +425,8 @@ content itself** — not on either node's identity, so it is stable across rebui
 those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, adding B's
 bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
 produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap of 250 and an active set of
-4 — produced `713c0ebb…`. **The old single-bond hash is not reachable again**: #71's fix moved the content,
+4 — produced `713c0ebb…`, and the 2026-10-24 rebuild — the shard renamed from `/root` to `/testnet` — produced
+`c596bef4…`, which is the current one. **The old single-bond hash is not reachable again**: #71's fix moved the content,
 so the same bond set no longer gives the same block.
 
 **The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
@@ -665,7 +666,7 @@ Deploy them with:
 # it and the CLI exits with `unexpected argument '--grpc-host' found` and prints jemalloc statistics
 # on the way out, which reads like a crash. On the node's own host, omit both.
 rnode --profile docker --grpc-host 164.90.140.144 --grpc-port 40401 deploy \
-  --phlo-limit 90000 --phlo-price 1 --shard-id /root --private-key <hex> term.rho
+  --phlo-limit 90000 --phlo-price 1 --shard-id /testnet --private-key <hex> term.rho
 # (D: 41401 on host A.  B: 40401, C: 41401, both on host B.)
 rnode --profile docker --grpc-host 164.90.140.144 --grpc-port 40401 deploy-status \
   --deploy-signature <deployId>
@@ -673,8 +674,8 @@ rnode --profile docker --grpc-host 164.90.140.144 --grpc-port 40401 deploy-statu
 
 Two easy-to-miss details:
 
-- `--shard-id /root`, or the node answers
-  `Deploy shardId '' is not a member of this node's shards: [/root]`;
+- `--shard-id /testnet`, or the node answers
+  `Deploy shardId '' is not a member of this node's shards: [/testnet]`;
 - `--valid-after-block-number <current height>` **only on a binary built before 2026-09-21** — the
   current testnet binary is anchored at the node's height automatically (). If `deploy-status`
   answers `notProcessed / Unknown`, the deploy was swept from the pool as expired.

@@ -150,7 +150,7 @@ signature must cover it.
     "phloPrice": 1,
     "phloLimit": 1000000,
     "validAfterBlockNumber": -1,
-    "shardId": "root",
+    "shardId": "/root",
     "attachments": ["deadbeef", "0102030405"]
   },
   "deployer": "<base16 secp256k1 public key>",
