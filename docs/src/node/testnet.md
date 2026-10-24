@@ -429,6 +429,32 @@ produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap 
 `c596bef4…`, which is the current one. **The old single-bond hash is not reachable again**: #71's fix moved the content,
 so the same bond set no longer gives the same block.
 
+### Rebuilding: the four things that bit, measured on 2026-10-24
+
+A rebuild is a fresh data directory and a new genesis. These are the steps that are not obvious, each
+one from the day's own failures:
+
+1. **The data directory owns the shard.** `/var/lib/rnode/shard-id` is a marker. A directory stamped
+   with one shard refuses to start under another — *"data directory /var/lib/rnode belongs to shard
+   '/root', but this node is configured for shard '/playground'; remove the directory or fix
+   `casper.shards`"*. Move the old directory aside; do not reuse it, and check the marker is gone
+   before starting.
+2. **A drop-in can override `ExecStart`.** `rnode.service.d/faucet.conf` does `ExecStart=` followed by
+   its own line, so editing the base unit changes nothing — the node keeps running the old binary. Edit
+   both, and confirm with `systemctl show -p ExecStart --value rnode.service` rather than trusting the file.
+3. **The node identity lives in the data directory** (`node.key.pem`, 0600). A fresh directory generates
+   a new `address`, and every joiner's `--bootstrap rnode://<id>@…` is then stale — they retry
+   `PeerUnavailable` ten times and exit. Either copy `node.key.pem` into the new directory, or re-point
+   the joiners.
+4. **A fresh chain cannot bootstrap on the faucet.** `POST /api/faucet` anchors on the last *finalized*
+   block, and at genesis nothing is finalized: it answers *"Finalized fringe is not available."* Seed the
+   first block with a direct deploy — `rnode --grpc-host <host> --grpc-port 40401 deploy --shard-id
+   /testnet --phlo-limit … --phlo-price … <term-file>`, where the term is a **file path**, not a term
+   string. Once one block exists, the faucet works.
+
+`rnode-health` is a monitor, not a keepalive: it writes a health snapshot and warns, and produces no
+deploys, so it does not keep a quiet chain moving.
+
 **The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
 blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
 hash exactly as a bond change does — and unlike a bond change, nothing about it is obvious to a node
