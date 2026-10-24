@@ -133,6 +133,14 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     // outside dev mode without a `dev-tax-address`, and a test chain is not a network that owes one
     // (its allocation is covered by `casper`'s own tests, not here).
     conf.dev_mode = true;
+    // A test chain is allocation-free unless a test sets an address explicitly.
+    // The shipped `dev-tax-address` is a proposal for the production genesis, not
+    // a test fixture; without this override every node test would inherit it.
+    conf.casper
+        .shards
+        .primary_mut()
+        .genesis_block_data
+        .dev_tax_address = String::new();
     conf.protocol_server.no_upnp = true;
     conf.protocol_server.host = Some("127.0.0.1".to_string());
 

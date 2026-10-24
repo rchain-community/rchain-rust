@@ -398,13 +398,17 @@ shipped 2 500 rather than failing to start). State it explicitly:
 --executor-share 2500     # or 0, for the contract's own behaviour: producers are paid nothing extra
 ```
 
-**`dev-tax-address` is required in a *production* genesis and empty everywhere else.** It names the REV
-address the developer allocation is credited to — `max(20 000 000 REV, 2% of the wallets file's total)`,
-[Law 78](../formal/laws.md). The *amount* is derived from the wallets file and is not configurable; only
-the address is. A genesis created outside `--dev-mode` with this key empty is refused at the launch
-branch, and a value that is set must parse as a REV address or startup refuses it. A devnet need not set
-it (devnets run `--dev-mode`); a node **joining** a chain whose genesis has no allocation must leave it
-empty, because naming an address there makes it derive a different genesis and refuse the block.
+**`dev-tax-address` names the developer allocation's recipient. The shipped default is a provisional
+address for confirmation, not an approved allocation.** It names the REV address the allocation is
+credited to — `max(20 000 000 REV, 2% of the wallets file's total)`, [Law 78](../formal/laws.md). The
+*amount* is derived from the wallets file and is not configurable; only the address is. A genesis
+created outside `--dev-mode` with this key empty is refused at the launch branch, and a value that is
+set must parse as a REV address or startup refuses it. A network with no allocation sets it empty; a
+devnet or test chain that must not carry one overrides this key to `""`. A node **joining** a chain
+whose genesis has no allocation must leave it empty, because naming an address there makes it derive a
+different genesis and refuse the block. Because the default is shipped with the image, a devnet started
+from it inherits the provisional address unless the operator overrides the key — one of the questions
+this draft asks to confirm.
 
 **`dev-tax-vesting-blocks` is how long that allocation takes to unlock**, in blocks from genesis. The
 allocation is credited to a *vesting account* rather than a spendable vault, and each epoch boundary
