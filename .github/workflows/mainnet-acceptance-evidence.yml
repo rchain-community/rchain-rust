@@ -1,0 +1,61 @@
+name: Mainnet acceptance evidence (proposed)
+
+on:
+  pull_request:
+    paths:
+      - 'tools/mainnet-acceptance.py'
+      - 'tools/tests/test_mainnet_acceptance.py'
+      - 'spec/audit/evidence/mainnet-acceptance/**'
+      - 'docs/src/node/mainnet-acceptance-evidence.md'
+      - '.github/workflows/mainnet-acceptance-evidence.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'tools/mainnet-acceptance.py'
+      - 'tools/tests/test_mainnet_acceptance.py'
+      - 'spec/audit/evidence/mainnet-acceptance/**'
+      - 'docs/src/node/mainnet-acceptance-evidence.md'
+      - '.github/workflows/mainnet-acceptance-evidence.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Report only, or enforce the strict evidence contract"
+        required: true
+        type: choice
+        options: [report, strict]
+        default: report
+
+permissions:
+  contents: read
+
+jobs:
+  evidence-contract:
+    name: Validate proposed evidence contract (NOT a release pass)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test fail-closed evaluator
+        run: python3 -m unittest discover -s tools/tests -p 'test_mainnet_acceptance.py' -v
+      - name: Generate source-pinned readiness report
+        run: |
+          python3 tools/mainnet-acceptance.py \
+            --manifest spec/audit/evidence/mainnet-acceptance/manifest.json \
+            --json-out mainnet-report.json --md-out mainnet-report.md
+          cat mainnet-report.md >> "$GITHUB_STEP_SUMMARY"
+          python3 -c 'import json; r=json.load(open("mainnet-report.json")); assert r["certification"] == "NOT_CERTIFIED"'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proposed-mainnet-evidence-report
+          path: |
+            mainnet-report.json
+            mainnet-report.md
+          retention-days: 30
+      - name: Strict evidence gate (manual invocation only)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'strict'
+        run: |
+          python3 tools/mainnet-acceptance.py \
+            --manifest spec/audit/evidence/mainnet-acceptance/manifest.json \
+            --strict
