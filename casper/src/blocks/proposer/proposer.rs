@@ -533,6 +533,10 @@ impl Proposer {
             // The first blocked observation is process-local monotonic time. None means the
             // round is healthy; restarts begin a fresh observation, never import a timer.
             let blocked_since: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+            // The quiet finality retry is independent of the round-escape clock:
+            // a quorum may be reachable even when every live sender is within
+            // the height-based cadence window and the tip has stopped moving.
+            let quiet_retry_since: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
             Arc::new(move |vi: &ValidatorIdentity, source: ProposeSource| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -542,6 +546,7 @@ impl Proposer {
                 let shard_id = shard_id.clone();
                 let blocked_since_advance = blocked_since_advance.clone();
                 let blocked_since = blocked_since.clone();
+                let quiet_retry_since = quiet_retry_since.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
                 let log = log.clone();
                 let health = health.clone();
@@ -561,6 +566,7 @@ impl Proposer {
                         dummy_deploy_opt.as_ref(),
                         &blocked_since_advance,
                         &blocked_since,
+                        &quiet_retry_since,
                         source,
                         &health,
                     )
@@ -857,6 +863,7 @@ async fn create_block<'a, F, Fut>(
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
     blocked_since_advance: &std::sync::atomic::AtomicI64,
     blocked_since: &Mutex<Option<Instant>>,
+    quiet_retry_since: &Mutex<Option<Instant>>,
     source: ProposeSource,
     health: &ShardHealth,
 ) -> Result<BlockCreatorResult, String>
@@ -1202,13 +1209,30 @@ where
     // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting to remote
     // blocks, and a caller's explicit propose is not a reaction.
     let paced = source == ProposeSource::Automatic;
-    let suppress_attestation = attestation_suppressed(
+    let ordinary_suppressed = attestation_suppressed(
         nothing_to_finalize,
         new_state_transition,
         quorum_reachable,
         cadence,
         paced,
     );
+    // A height-based cadence cannot become due if every online validator has
+    // spoken recently and the tip is stationary. Once a deploy has aged past
+    // the prompt-attestation horizon, the old gate suppresses every automatic
+    // retry despite a reachable whole-bonded-stake quorum. Give that exact
+    // quiet, overdue, quorum-reachable case a process-local monotonic retry
+    // every ROUND_STALL_ESCAPE. It is an *attestation*, not a new deploy;
+    // neither the finalizer nor the quorum denominator changes. A failed
+    // attempt still consumes its interval, so error/retry loops cannot storm.
+    let quiet_retry = quiet_finality_retry_due(
+        !nothing_to_finalize,
+        !new_state_transition,
+        quorum_reachable,
+        paced,
+        quiet_retry_since,
+        Instant::now(),
+    );
+    let suppress_attestation = ordinary_suppressed && !quiet_retry;
     // **Why this node did or did not attest, in its own log** (#213's diagnostic). Without it a validator
     // that stays silent looks exactly like one with nothing to do: the R3 arm on #219 showed the genesis
     // signer making no block after genesis, and no run could say which input held it.
@@ -1223,10 +1247,13 @@ where
         escape,
         suppressed: suppress_attestation,
     });
-    if attestation_line_due(&decision, i64::from(tip)) {
+    if quiet_retry || attestation_line_due(&decision, i64::from(tip)) {
         log.info(
             LogSource::new("casper.blocks.Proposer"),
-            &format!("attestation at tip {}: {decision}", i64::from(tip)),
+            &format!(
+                "attestation at tip {}: {decision}; quiet_finality_retry={quiet_retry}",
+                i64::from(tip)
+            ),
         );
     }
 
@@ -2205,6 +2232,41 @@ fn cadence_due(
 /// this many heights after the deploy, instead of every validator attesting at every height for ever.
 const ATTESTATION_HORIZON: i64 = 3 * liveness::LIVENESS_WINDOW;
 
+/// Recovery of an overdue, unfinalized deploy after the height-based cadence
+/// clock freezes. A validator may remain at exactly the tip, so "quiet by
+/// LIVENESS_WINDOW heights" can never become true; a monotonic retry supplies
+/// one attestation per bounded interval without helper deploys.
+///
+/// Refuse when the whole-bonded-stake quorum is unreachable, when there is
+/// nothing to finalize, or while prompt attestations are still licensed.
+/// The first overdue observation only arms the timer. No process-local clock
+/// participates in block validation or the finalized-fringe derivation.
+fn quiet_finality_retry_due(
+    pending: bool,
+    overdue: bool,
+    quorum_reachable: bool,
+    paced: bool,
+    since: &Mutex<Option<Instant>>,
+    now: Instant,
+) -> bool {
+    let mut clock = since.lock().unpoison();
+    if !pending || !overdue || !quorum_reachable || !paced {
+        *clock = None;
+        return false;
+    }
+    match *clock {
+        None => {
+            *clock = Some(now);
+            false
+        }
+        Some(first) if now.saturating_duration_since(first) >= ROUND_STALL_ESCAPE => {
+            *clock = Some(now);
+            true
+        }
+        Some(_) => false,
+    }
+}
+
 /// The guard's two inputs, from the **oldest deploy-bearing block this node has seen that the fringe it is
 /// building on does not yet cover** (`None`: there is none).
 ///
@@ -2395,6 +2457,91 @@ fn attestation_reaches_supermajority(
     total_stake: i128,
 ) -> bool {
     is_super_majority(moving_stake + own_stake, total_stake)
+}
+
+#[cfg(test)]
+mod quiet_finality_retry_tests {
+    use super::*;
+    #[test]
+    fn frozen_height_gets_a_bounded_monotonic_retry_only_with_full_quorum() {
+        let timer = Mutex::new(None);
+        let t = Instant::now();
+        assert!(!quiet_finality_retry_due(true, true, true, true, &timer, t));
+        assert!(!quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE - Duration::from_millis(1),
+        ));
+        assert!(quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE,
+        ));
+        assert!(!quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE + Duration::from_secs(1),
+        ));
+        assert!(quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 2,
+        ));
+        // Even on an expired workload, a minority must never use the retry.
+        assert!(!quiet_finality_retry_due(
+            true,
+            true,
+            false,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 3,
+        ));
+        // A subsequent quorum observation has to re-arm, not borrow an old clock.
+        assert!(!quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 3,
+        ));
+        assert!(!quiet_finality_retry_due(
+            true,
+            false,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 4,
+        ));
+        assert!(!quiet_finality_retry_due(
+            false,
+            true,
+            true,
+            true,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 5,
+        ));
+        assert!(!quiet_finality_retry_due(
+            true,
+            true,
+            true,
+            false,
+            &timer,
+            t + ROUND_STALL_ESCAPE * 6,
+        ));
+    }
 }
 
 #[cfg(test)]

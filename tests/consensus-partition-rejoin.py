@@ -19,6 +19,29 @@ class WorkloadDrill(a.Drill):
         return super().wait(description,condition,drive=True)
 
     def finalized_marker_agreement(self, min_height):
+        # A stale finalized height and a permanent divergence are different
+        # failure classes. Record the gate's own health before every read, and
+        # fail early if the node has abandoned an irrecoverable block.
+        statuses = []
+        for i in range(self.args.validators):
+            operator = a.get(i, "/api/v1/status/operator", admin=True)
+            statuses.append({
+                "node": i,
+                "latest": operator.get("latestBlockNumber"),
+                "peers": operator.get("peers"),
+                "finality_stall": operator.get("finalityStall"),
+                "unrestorable_records": operator.get("unrestorableRecords"),
+                "unrestorable_block": operator.get("unrestorableBlock"),
+                "undelivered_sends": operator.get("undeliveredSends"),
+            })
+        self.record(phase="healing_probe", target_min_height=min_height, nodes=statuses)
+        bad = [x for x in statuses if (x["unrestorable_records"] or 0) > 0]
+        if bad:
+            details = [(x["node"], x["unrestorable_block"]) for x in bad]
+            raise RuntimeError(
+                f"PERMANENT_DIVERGENCE: {details}; finalized agreement cannot be"
+                " certified by extending the wait. See healing_probe evidence."
+            )
         # Retaining the marker at different finalized heads is not yet rejoin
         # agreement. Keep waiting inside the existing 150-second healing bound.
         identities = self.finalized_marker(min_height, required=True)

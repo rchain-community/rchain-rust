@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' && github.event.inputs.mode != 'quiet-gap' && github.event.inputs.mode != 'quiet-seeded' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -531,3 +531,124 @@ jobs:
         run: |
           tools/devnet.sh down -v || true
           DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
+
+  quiet-435-real-nodes:
+    if: ${{ github.event.inputs.mode == 'quiet-gap' }}
+    name: Issue 435 quiet chain, one paused validator, no helpers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      DEVNET_PREFIX: acceptance
+      DEVNET_NETWORK: acceptance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build exact source node
+        run: |
+          set -euo pipefail
+          mkdir -p target/quiet-435
+          git rev-parse HEAD | tee target/quiet-435/source.txt
+          tools/devnet.sh build
+          docker image inspect rnode:local > target/quiet-435/image.json
+      - name: Execute independent N4 and N8 quiet-chain campaigns
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for n in 4 8; do
+            mkdir -p "target/quiet-435/n$n"
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/quiet-435/n$n/start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              python3 tools/quiet-chain-issue-435.py --validators "$n" --window 240 --out "target/quiet-435/n$n" > "target/quiet-435/n$n/drill.log" 2>&1
+              code=$?
+            else
+              code=$start_code
+            fi
+            echo "quiet_n$n=$code" | tee -a target/quiet-435/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            for ((i=0; i<n; i++)); do
+              node="acceptance-validator-$i"
+              [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/quiet-435/n$n/$node.log" 2>&1 || true
+            done
+            docker unpause "acceptance-validator-$((n-1))" >/dev/null 2>&1 || true
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve verdicts and node-level evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: quiet-435-${{ github.run_id }}
+          path: target/quiet-435/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown disposable networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
+
+
+  quiet-435-seeded-real-nodes:
+    if: ${{ github.event.inputs.mode == 'quiet-seeded' }}
+    name: Issue 435 seeded-baseline quiet chain, no helpers during window
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      DEVNET_PREFIX: acceptance
+      DEVNET_NETWORK: acceptance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build exact source node
+        run: |
+          set -euo pipefail
+          mkdir -p target/quiet-435-seeded
+          git rev-parse HEAD | tee target/quiet-435-seeded/source.txt
+          tools/devnet.sh build
+          docker image inspect rnode:local > target/quiet-435-seeded/image.json
+      - name: Execute independent N4 and N8 quiet-chain campaigns
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          failed=0
+          for n in 4 8; do
+            mkdir -p "target/quiet-435-seeded/n$n"
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/quiet-435-seeded/n$n/start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              python3 tools/quiet-chain-issue-435.py --initialization seeded --validators "$n" --window 240 --out "target/quiet-435-seeded/n$n" > "target/quiet-435-seeded/n$n/drill.log" 2>&1
+              code=$?
+            else
+              code=$start_code
+            fi
+            echo "quiet_n$n=$code" | tee -a target/quiet-435-seeded/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            for ((i=0; i<n; i++)); do
+              node="acceptance-validator-$i"
+              [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/quiet-435-seeded/n$n/$node.log" 2>&1 || true
+            done
+            docker unpause "acceptance-validator-$((n-1))" >/dev/null 2>&1 || true
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve verdicts and node-level evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: quiet-435-seeded-${{ github.run_id }}
+          path: target/quiet-435-seeded/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown disposable networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
