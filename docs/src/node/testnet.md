@@ -26,9 +26,10 @@ hosts, the genesis, the wallets.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`; genesis built from this net's `bonds.txt`, four equal stakes |
+| Chain | `testnet` network id, shard **`/testnet`**; genesis built from this net's `bonds.txt`, four equal
+  stakes. Rebuilt 2026-10-24 from a fresh genesis `c596bef4bb678b3ac0cdb931b5b6968653209ca40bc35b6fec0050254d479b26` |
 | Validators | **four, at equal stake — 250 each, pool 1000**, two per host. Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
-| Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
+| Hosts | A `164.90.140.144` (nyc3) and B `167.99.43.214` (**ams3**) — deliberately on two continents, so every 3-of-4 quorum crosses the Atlantic. Both `s-2vcpu-4gb` |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
 | Binary | `dev` @ `b4f1cbfdb`, static musl, `sha256:06d1823e6b80…`, **the same build on all four nodes** |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
@@ -234,9 +235,9 @@ testnet.rhobot.net ──► node A 164.90.140.144 (10.108.0.3)   genesis master
                         └─ rnode: -s --dev-mode --propose-on-deploy --attest-on-new-blocks
                        node D 164.90.140.144 (10.108.0.3)   validator, stake 250      (ports 41400-41405)
                         └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
-                       node B 104.131.176.164 (10.108.0.4)  validator, stake 250      (ports 40400-40405)
+                       node B 167.99.43.214 (ams3)         validator, stake 250      (ports 40400-40405)
                         └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
-                       node C 104.131.176.164 (10.108.0.4)  validator, stake 250      (ports 41400-41405)
+                       node C 167.99.43.214 (ams3)         validator, stake 250      (ports 41400-41405)
                         └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
 ```
 
@@ -282,8 +283,8 @@ HTTP-only client reaches A. The three **gRPC deploy ports are open, and each one
 |---|---|---|
 | A | 250 | `164.90.140.144:40401` |
 | D | 250 | `164.90.140.144:41401` |
-| B | 250 | `104.131.176.164:40401` |
-| C | 250 | `104.131.176.164:41401` |
+| B | 250 | `167.99.43.214:40401` |
+| C | 250 | `167.99.43.214:41401` |
 
 A client that addresses B or C directly gets that validator's proposal, and its block finalises the same
 way. Spreading deploys across the three is a supported configuration, not a workaround.

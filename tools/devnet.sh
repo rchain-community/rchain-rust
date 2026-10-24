@@ -23,6 +23,12 @@ IMAGE="${RNODE_IMAGE:-rnode:local}"
 # touching the running network's containers or volumes. `NETWORK` stays its own variable because the
 # default name is what other tooling and the docs expect.
 PREFIX="${DEVNET_PREFIX:-devnet}"
+
+# The shard id this devnet's deploys carry. `/root` is the node default; a devnet that mirrors a
+# named net (`/testnet`, `/playground`) sets it here, because a deploy is only accepted when its
+# `shardId` equals the node's own (`validate.rs`, `deploys_shard_identifier`) — a bare `root` or a
+# stale `/root` is refused outright.
+SHARD_ID="${DEVNET_SHARD_ID:-/root}"
 NETWORK="${DEVNET_NETWORK:-devnet}"
 BOOTSTRAP="${PREFIX}-bootstrap"
 
@@ -1009,7 +1015,7 @@ cmd_deploy() {
   node_cli "$node" deploy \
     --phlo-limit 1000000 --phlo-price 1 \
     --private-key "$DEPLOYER_PRIV" \
-    --shard-id /root \
+    --shard-id "$SHARD_ID" \
     --valid-after-block-number "${height:-0}" \
     "/contracts/$base"
 }

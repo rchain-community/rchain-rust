@@ -198,7 +198,7 @@ Deploy them with the shard named, and read the result out of the term rather tha
 (both covered in [Operating the node](operating.md#rnode-deploy-and-deploy-status)):
 
 ```sh
-rnode --profile docker deploy --phlo-limit 90000 --phlo-price 1 --shard-id /root \
+rnode --profile docker deploy --phlo-limit 90000 --phlo-price 1 --shard-id /testnet \
   --private-key <hex> term.rho
 rnode --profile docker deploy-status --deploy-signature <deployId>
 ```
