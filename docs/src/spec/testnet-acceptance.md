@@ -67,9 +67,9 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | ✅ **on A1.1, A1.2, A1.4, A1.5 · ❌ on A1.3** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. **A1.2 (N=5) now passes and A1.3 (N=8) fails**, both measured 2026-10-07 on `bbabc39e8` — the N=5 deploy finalises in 5–6 s while the N=8 chain reaches 112–120 blocks across all eight validators and never finalises, "supporting stake is not a supermajority — 400 of 800". The residual §3.1 used to count here — arms leaving their sixth deploy short, **2 of 3** on `07af032ad`, **0 of 3** on jimscarver's `f1ca009`, **1 of 3** on `513e2192b` — is **not a race and not a loss**: §3.1's own C246 correction read all twelve arms of four runs and found a quiet chain's greatest `finalized` is `tip − 4`, frozen, so a deploy finalises iff production ran at least four heights past it and the spread is **slack, not the node**. A1.5's wording was the thing that failed, and it is **restated and closed** (§3.1, 2026-10-11). Recorded in §3.1 and on #213 |
+| 1 — bounded production | ✅ **5 of 5 pass; A1.3 superseded by merged #408 exact-head acceptance** | A1.1, A1.2, A1.4 and the restated A1.5 retain their recorded witnesses. A1.3's 2026-10-07 run on `bbabc39e8` remains the historical red control: all eight validators produced while finality stayed at zero. The deterministic quorum-height and bounded handoff/recovery corrections merged in [#408](https://github.com/rhovision-org/rholo/pull/408) (`b47c6bc886a82840ad8a17e0196a83e22737edea`). On the exact review head `69bf868f794d15d4ba7ed2924b4c5a5b7d29e955`, upstream CI passed and the unmodified canonical N=8 campaign passed the healthy arm plus two one-validator partition/rejoin cycles: seven online validators advanced finality 57→60 and 77→83, all eight rejoined at identical finalized height/hash, and both cycles retained the original volumes and snapshots. This acceptance is source-pinned and the approved activation boundary is the next new genesis; it does not authorize an ungated binary swap on an existing chain. |
 | 2 — join and leave | **5 of 5 pass; A2.2 on the live testnet** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 passes on the live testnet** at `777953de6`: after a plain `start` the rejoiner is level with the tip within 15 s, proposes when deployed to, and its blocks finalise ([#223](https://github.com/rhovision-org/rholo/issues/223)) |
-| 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
+| 3 — attack vectors | ⬛ **not a pass/fail item** | the bounded-adversary statement now exists in [`adversary.md`](adversary.md), and §3.3 records the current census limits. The criterion remains a census and must not be reported as a green/red verdict. |
 
 > **Handover, 2026-10-04.** The maintainer has taken the decision: **the testnet goes up as it stands**, and
 > it becomes the measurement platform. The three issues that owned this work — **#214** (this page),
@@ -1908,20 +1908,21 @@ a row the net has not earned.
 
 ## 3.1 Criterion 1 — Anyone can propose, and production is bounded
 
-> **§3.1 — 4 ✅ · 1 ❌ · 0 ⬜** (A1.5 restated and closed 2026-10-11; before that 3 ✅ · 2 ❌ · 0 ⬜ as of the 2026-10-07 re-run of A1.2/A1.3, and 2 ✅ · 1 ❌ · 2 ⬜ when
-> this pass closed). A1.1 passes; **A1.2 (N=5) passes** — the deploy's block finalises in 5–6 s, in all
-> three attempts — and **A1.3 (N=8) fails**, which is the re-run's finding rather than the pre-fix one:
-> the chain reaches 112–120 blocks with all eight validators sending and **never finalises**, because
-> the layer's supporting stake is never a supermajority (400 of 800 at best, and 0 of 800 in most
-> refusals). **A1.5 fails** — a deploy landing in the final heights of a quiet net is included and never
-> finalised, so "every deploy finalises" is a stronger claim than A1.1 makes and the net does not meet
-> it; its character is measured in the correction below and in pass 71.
+> **§3.1 — 5 ✅ · 0 ❌ · 0 ⬜** as of the merged #408 exact-head acceptance. The earlier
+> 2026-10-07 A1.3 result remains the red-before control: on `bbabc39e8`, all eight validators produced
+> 112–120 blocks while `last-finalized-block` never advanced. #408 changes the deterministic quorum-height
+> input and the bounded announcement/recovery paths; its exact review head
+> `69bf868f794d15d4ba7ed2924b4c5a5b7d29e955` passed upstream CI and the unchanged canonical N=8
+> healthy plus two-cycle partition/rejoin campaign. The seven online validators advanced finality
+> 57→60 and 77→83; after each rejoin all eight agreed on finalized height/hash and retained the original
+> volumes and snapshots. The accepted rollout is next-new-genesis only. A1.5 remains restated as
+> “no deploy on a quiet net is silently lost” and retains its lag/resumption witness below.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
 | A1.1 | In a 3-validator all-live net, one deploy mints a **bounded** number of blocks **and its block finalises** | production continues without bound, or the height merely stops without the deploy finalising | node argv `--propose-on-deploy --attest-on-new-blocks` with `--autopropose` **absent** (there is no `--no-autopropose` flag — see CH-ACC-04); 3 bonded validators 100/100/50; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T074618Z/` (this pass) + `n220-join-results.md` | `07af032ad` | `n149-sample.py` sampling `/api/last-finalized-block`, plus the block-hash union | `last-finalized-block` ≥ the deploy block's height | ✅ **pass** | CH-ACC-01, CH-ACC-02 |
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | **the #149 sweep's:** `--propose-on-deploy` with `--autopropose` absent, 5 bonded validators at the devnet's default **equal** stakes, default epoch length — **not** A1.1's `--stakes 100,100,50 --epoch-length 10` scaled | `spec/audit/evidence/n149-blocks/bbabc39e8-20261007T121036Z/` (3 attempts, 0 void) | `bbabc39e8` | `n149-sample.py` sampling `/api/last-finalized-block`, plus the block-hash union | the deploy's block is block **1** in all three attempts and `last-finalized-block` reaches **2** within 5–6 s; 25 blocks after the deploy, one per validator | ✅ **pass** (2026-10-07) | — |
-| A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.2, at eight equal-stake validators | `spec/audit/evidence/n149-blocks/bbabc39e8-20261007T121036Z/` (3 attempts, 0 void) | `bbabc39e8` | as A1.2 | **`last-finalized-block` never advances, in any of the three attempts**, against 112–120 blocks and all eight validators sending. The refusal is named: *"a layer exists but its supporting stake is not a supermajority — 400 of 800"*, and over one attempt's 57 refusals the support is **0 of 800 in 24 of them**, 100 in 21, 200 in 11, 300 in 1 (534 is the supermajority) | ❌ **fail** (2026-10-07) | — |
+| A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | eight equal-stake validators; canonical workload and full-bonded-stake denominator unchanged | historical red control: `spec/audit/evidence/n149-blocks/bbabc39e8-20261007T121036Z/`; superseding exact-head runs: [upstream CI 39704613697](https://github.com/rhovision-org/rholo/actions/runs/39704613697) and [canonical N=8 39704657838](https://github.com/aixaria0/rchain-rust/actions/runs/39704657838) | historical `bbabc39e8`; accepted head `69bf868f794d15d4ba7ed2924b4c5a5b7d29e955`; merged as `b47c6bc886a82840ad8a17e0196a83e22737edea` | unchanged canonical N=8 harness, strict post-check, and source-pinned evidence archive | **Red-before:** finality never advanced in three historical attempts despite 112–120 blocks. **Green-after:** healthy N=8 passed; the two partition cycles advanced 57→60 and 77→83, then all eight nodes agreed on finalized height/hash at 77 and 83 with original volumes/snapshots retained. This proves the recorded workload on the exact head; it is not a universal CBC-safety claim. | ✅ **pass** (superseded 2026-10-22 by merged #408; next-new-genesis activation) | — |
 | A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-…/R1/blocks.tsv` | `07af032ad` | the block-hash union, not `latestBlockNumber` | the union counts 28 blocks from one sender where the height reaches 28 for all three — the two are not the same quantity | ✅ **pass** | CH-ACC-02 |
 | A1.5 | **no deploy on a quiet net is silently lost** — *restated 2026-10-11*: a quiet chain leaves its last few heights unfinalised (`finalized = tip − 4`, frozen) **because nothing is being produced**, and every one of them finalises as soon as the chain produces again | a block left in that band that a later, *produced* chain does not finalise — a **loss**, which is the defect this row exists to catch | 3 validators 100/100/50, `--propose-on-deploy --attest-on-new-blocks`, `--epoch-length 10`, `--no-autopropose`, 6 deploys every 12 s then quiet | `spec/audit/evidence/n214-tail-lag-blocks/9f52d84d3-20261007T114830Z/` (3 arms: R1 bootstrap-shape, R2 rotating, R3 all-to-validator-1) **and** the band's twelve arms across four runs in `spec/audit/evidence/n214-rotation-blocks/` | `9f52d84d3` and `513e2192b` | the rig itself: quiet, read the wall, deploy once more, read again — a loss would show as a block still unfinalised after the chain produced | **R1 55/51 → 59/55, R2 35/31 → 39/35, R3 29/25 → 35/31: the block at the wall's tip, unfinalised while the chain was idle, finalised in every arm once production resumed** — a positive witness, and the arm's own loss-discriminator armed and not fired | ✅ **pass** (restated 2026-10-11) | — |
 
@@ -2097,8 +2098,8 @@ still cannot go green by construction, which is the honest shape of criterion 3.
 | 2026-W39 | 17 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
 | 2026-W40 | 62 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
 
-The class column reads `not counted` for a measured reason, recounted 2026-10-14: **158 of the 364
-`done` rows name a law or class; 206 carry an empty classification cell** (`spec/AUDIT.md`;
+The class column reads `not counted` for a measured reason, recounted 2026-10-14: **164 of the 370
+register rows name a law or class; 206 carry an empty classification cell** (`spec/AUDIT.md`;
 `spec/findings.tsv`). The register
 therefore reports **volume, not class**. The wargame's ledger now supplies a **class vocabulary** for the
 rows it adds (`unauth-actuation`, `key-at-rest`, `disclosure`, …), so the fill rate is measurable going
@@ -2106,7 +2107,7 @@ forward even though the 206 historical rows are not retro-migrated.
 
 **Where the census stands, 2026-10-14.** The two windows above are the ones this pass measured. What has
 changed since is the close-out of the wargame's falsifiers: the register grew from **250 rows at the end
-of W40 to 365** today, and every one of the wargame's 97 Table A rows now carries a taken falsifier, a
+of W40 to 370** today, and every one of the wargame's 97 Table A rows now carries a taken falsifier, a
 gate citation, an arm run or a recorded decision — its page reads `owed:` on no row at all (pass record
 §128–§136; register C313–C330).
 
@@ -2115,7 +2116,14 @@ gate citation, an arm run or a recorded decision — its page reads `owed:` on n
 `done`**: the register was authored retroactively, so a row's `done` state records the day it was
 *written up*, not the day its defect was closed — and a rate read off it would measure the writing, not
 the work. The class column's fill rate is the figure that is measurable here, and it has moved from 36 of
-242 to **158 of 364**.
+242 to **164 of 370**.
+
+**Current register snapshot, 2026-10-24.** `spec/findings.tsv` contains **370 rows: 369 `done`,
+0 `todo`, and 1 `in progress`**. The remaining row is **C301**, a coverage-denominator audit:
+the three audit passes deeply review running-node behavior while the system-contract surface remains
+deferred or read-only. This is an audit-coverage obligation, not evidence that the N=8 acceptance
+regressed and not a count of unhandled live-net defects. The worksheet still contains exactly
+**85 ⚠ rows**; those are owed measurements and must not be collapsed into the findings-register count.
 
 The rate is the reason the gate is up: the register took **C195 through C207 in a single window**, and
 C207 alone meant the join path had **never worked on a network that merges**.
